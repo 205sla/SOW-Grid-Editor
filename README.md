@@ -153,7 +153,7 @@ Route2=(6,6)->(5,6)->...
 - localStorage
 - Cookies
 
-Chrome, Firefox, Edge, Safari에서 테스트 완료.
+Chrome에서 테스트 완료.
 
 ---
 
