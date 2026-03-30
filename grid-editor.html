@@ -7,6 +7,7 @@
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+
 body {
   background: #0f0f0f;
   color: #aaa;
@@ -196,6 +197,24 @@ button.act.dirty { background: #fff; color: #000; border-color: #fff; }
   display: flex;
   align-items: center;
   gap: 5px;
+}
+.route-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  color: #555;
+  line-height: 1;
+}
+.route-btn:hover { color: #bbb; }
+.route-btn.locked { color: #e8a640; }
+.route-btn.drawing { color: #4ae840; }
+.cell.draw-highlight { outline: 2px solid #4ae840; outline-offset: -2px; z-index: 1; }
+.cell.draw-start { outline: 2px solid #e8a640; outline-offset: -2px; z-index: 1; }
+.route-btn.playing { color: #4ae8e8; }
+.cell.anim-trail { outline: 2px solid rgba(255,255,255,0.25); outline-offset: -2px; z-index: 1; }
+.cell.anim-head { outline: 3px solid #fff; outline-offset: -3px; z-index: 2; }
   margin-bottom: 3px;
   color: #777;
   font-size: 11px;
@@ -439,6 +458,10 @@ let classMap = {
 
 let routes = [];
 
+// Manual drawing state
+let manualDraw = null; // { routeIdx, isM, path: [{r,c}...] }
+let routeAnim = null;  // { routeIdx, timer, step }
+
 const TILES = ['BLOCKED','PATH','SPAWN','RUNE'];
 const BL_LEVELS = ['L1','L2','L3','L4','L5'];
 const TC = {
@@ -591,8 +614,10 @@ function applySize() {
 function clearGrid() {
   for (let r = 0; r < gH; r++)
     for (let c = 0; c < gW; c++) grid[r][c] = 'BLOCKED';
+  routes = [];
   markMapDirty();
   renderGrid();
+  renderSide();
   setTimeout(drawRoutes, 20);
 }
 
@@ -683,16 +708,6 @@ function paint(r, c) {
   }
 }
 
-function onDown(e) {
-  if (e.button !== 0) return;
-  painting = true;
-  paint(+e.currentTarget.dataset.r, +e.currentTarget.dataset.c);
-  e.preventDefault();
-}
-function onOver(e) {
-  if (!painting) return;
-  paint(+e.currentTarget.dataset.r, +e.currentTarget.dataset.c);
-}
 document.addEventListener('mouseup', () => { painting = false; });
 
 // ── Routes SVG ─────────────────────────────────────────────────────────────
@@ -795,20 +810,42 @@ function renderRoutes(el) {
     const col = RC[routeNum % RC.length];
     const head = document.createElement('div');
     head.className = 'route-head';
-    const nameInp = document.createElement('input');
-    nameInp.value = route.name;
-    nameInp.dataset.idx = i;
-    nameInp.style.cssText = 'background:#1a1a1a;border:1px solid #333;color:#bbb;font-family:inherit;font-size:10px;padding:1px 4px;width:80px;';
-    nameInp.onchange = function() { routes[+this.dataset.idx].name = this.value; drawRoutes(); };
     const dot = document.createElement('span');
     dot.className = 'dot';
     dot.style.background = col;
+    const nameInp = document.createElement('input');
+    nameInp.value = route.name;
+    nameInp.dataset.idx = i;
+    nameInp.style.cssText = 'background:#1a1a1a;border:1px solid #333;color:#bbb;font-family:inherit;font-size:10px;padding:1px 4px;width:70px;';
+    nameInp.onchange = function() { routes[+this.dataset.idx].name = this.value; drawRoutes(); };
+
+    const lockBtn = document.createElement('button');
+    lockBtn.className = 'route-btn' + (route.locked ? ' locked' : '');
+    lockBtn.textContent = route.locked ? '🔒' : '🔓';
+    lockBtn.title = route.locked ? '잠금 해제' : '잠금';
+    lockBtn.onclick = () => { route.locked = !route.locked; renderSide(); };
+
+    const drawBtn = document.createElement('button');
+    drawBtn.className = 'route-btn' + (manualDraw && manualDraw.routeIdx === i ? ' drawing' : '');
+    drawBtn.textContent = '✏️';
+    drawBtn.title = '수동 입력';
+    drawBtn.onclick = () => startManualDraw(i);
+
+    const playBtn = document.createElement('button');
+    playBtn.className = 'route-btn' + (routeAnim && routeAnim.routeIdx === i ? ' playing' : '');
+    playBtn.textContent = routeAnim && routeAnim.routeIdx === i ? '⏹' : '▶';
+    playBtn.title = '경로 재생';
+    playBtn.onclick = () => toggleRoutePlay(i);
+
     const rm = document.createElement('button');
     rm.textContent = '✕';
     rm.style.cssText = 'margin-left:auto;font-size:9px;padding:1px 4px;';
-    rm.onclick = () => { routes.splice(i, 1); drawRoutes(); renderSide(); };
+    rm.onclick = () => { stopRoutePlay(); if (manualDraw && manualDraw.routeIdx === i) cancelManualDraw(); routes.splice(i, 1); drawRoutes(); renderSide(); };
     head.appendChild(dot);
     head.appendChild(nameInp);
+    head.appendChild(lockBtn);
+    head.appendChild(drawBtn);
+    head.appendChild(playBtn);
     head.appendChild(rm);
     div.appendChild(head);
     const ta = document.createElement('textarea');
@@ -822,7 +859,7 @@ function renderRoutes(el) {
   const add = document.createElement('button');
   add.textContent = '+ 경로 추가';
   add.style.cssText = 'width:100%;margin-top:4px;';
-  add.onclick = () => { routes.push({ name: `Route${routes.length + 1}`, path: '' }); renderSide(); };
+  add.onclick = () => { routes.push({ name: `Route${routes.length + 1}`, path: '' }); sortRoutes(); renderSide(); };
   el.appendChild(add);
 }
 
@@ -938,7 +975,7 @@ function serializeCurrentMap() {
     meta: { ...meta },
     classMap: { ...classMap },
     grid: grid.map(row => [...row]),
-    routes: routes.map(r => ({ ...r }))
+    routes: routes.map(r => ({ name: r.name, path: r.path, locked: !!r.locked }))
   };
 }
 
@@ -947,7 +984,7 @@ function applyMapData(m) {
   meta     = { ...m.meta };
   classMap = { ...m.classMap };
   grid     = m.grid.map(row => [...row]);
-  routes   = (m.routes || []).map(r => ({ ...r }));
+  routes   = (m.routes || []).map(r => ({ name: r.name, path: r.path, locked: !!r.locked }));
   currentMapId   = m.id;
   currentMapName = m.name;
   document.getElementById('iw').value = gW;
@@ -1230,6 +1267,7 @@ function parseINI(text, fname) {
       grid[r][c] = ng[r]?.[c] || 'BLOCKED';
   }
   routes = nr;
+  sortRoutes();
   if (Object.keys(ncm).length) Object.assign(classMap, ncm);
   Object.assign(meta, nm);
 
@@ -1241,6 +1279,17 @@ function parseINI(text, fname) {
   renderSide();
   updateMapIndicator(true);
   status(`불러옴: ${fname} (${gW}×${gH})`);
+}
+
+function sortRoutes() {
+  routes.sort((a, b) => {
+    const numA = +(a.name.match(/(\d+)/) || [,0])[1];
+    const numB = +(b.name.match(/(\d+)/) || [,0])[1];
+    if (numA !== numB) return numA - numB;
+    const mA = a.name.endsWith('_M') ? 1 : 0;
+    const mB = b.name.endsWith('_M') ? 1 : 0;
+    return mA - mB;
+  });
 }
 
 // ── Auto Route Generation ──────────────────────────────────────────────────
@@ -1255,17 +1304,25 @@ function autoGenerateRoutes() {
   if (!spawns.length) { status('Auto-route: SPAWN 타일 없음'); return; }
   if (!runes.length)  { status('Auto-route: RUNE 타일 없음');  return; }
 
+  // Preserve locked routes
+  const lockedRoutes = routes.filter(r => r.locked);
+  const lockedNames = new Set(lockedRoutes.map(r => r.name));
+
   const newRoutes = [];
   spawns.forEach((spawn, i) => {
     const n = i + 1;
-    const path = bfs(spawn, runes, false);
-    if (path) newRoutes.push({ name: `Route${n}`, path: path.map(p => `(${p.c},${p.r})`).join('->') });
-
-    const pathM = bfs(spawn, runes, true);
-    if (pathM) newRoutes.push({ name: `Route${n}_M`, path: pathM.map(p => `(${p.c},${p.r})`).join('->') });
+    if (!lockedNames.has(`Route${n}`)) {
+      const path = bfs(spawn, runes, false);
+      if (path) newRoutes.push({ name: `Route${n}`, path: path.map(p => `(${p.c},${p.r})`).join('->') });
+    }
+    if (!lockedNames.has(`Route${n}_M`)) {
+      const pathM = bfs(spawn, runes, true);
+      if (pathM) newRoutes.push({ name: `Route${n}_M`, path: pathM.map(p => `(${p.c},${p.r})`).join('->') });
+    }
   });
 
-  routes = newRoutes;
+  routes = [...lockedRoutes, ...newRoutes];
+  sortRoutes();
   markMapDirty();
   renderSide();
   drawRoutes();
@@ -1275,25 +1332,250 @@ function autoGenerateRoutes() {
 function bfs(start, targets, includeM) {
   const targetSet = new Set(targets.map(t => `${t.r},${t.c}`));
   const isWalkable = t => t.startsWith('SPAWN') || t === 'PATH' || t === 'RUNE' || (includeM && t.endsWith('_M'));
-  const queue = [[start]];
-  const visited = new Set([`${start.r},${start.c}`]);
 
-  while (queue.length) {
-    const path = queue.shift();
-    const cur = path[path.length - 1];
-    if (targetSet.has(`${cur.r},${cur.c}`)) return path;
+  // Heuristic: min Manhattan distance to any target
+  const h = (r, c) => {
+    let min = Infinity;
+    for (const t of targets) { const d = Math.abs(r - t.r) + Math.abs(c - t.c); if (d < min) min = d; }
+    return min;
+  };
+
+  const startKey = `${start.r},${start.c}`;
+  const gScore = new Map([[startKey, 0]]);
+  const cameFrom = new Map();
+  // Open set as sorted array (small grids, simple is fine)
+  const open = [{ r: start.r, c: start.c, f: h(start.r, start.c) }];
+  const closed = new Set();
+
+  while (open.length) {
+    // Pick node with lowest f
+    let bestIdx = 0;
+    for (let i = 1; i < open.length; i++) if (open[i].f < open[bestIdx].f) bestIdx = i;
+    const cur = open.splice(bestIdx, 1)[0];
+    const curKey = `${cur.r},${cur.c}`;
+
+    if (targetSet.has(curKey)) {
+      // Reconstruct path
+      const path = [{ r: cur.r, c: cur.c }];
+      let k = curKey;
+      while (cameFrom.has(k)) { k = cameFrom.get(k); const [pr, pc] = k.split(',').map(Number); path.unshift({ r: pr, c: pc }); }
+      return path;
+    }
+
+    closed.add(curKey);
+    const curG = gScore.get(curKey);
 
     for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
       const nr = cur.r + dr, nc = cur.c + dc;
-      const key = `${nr},${nc}`;
+      const nKey = `${nr},${nc}`;
       if (nr < 0 || nr >= gH || nc < 0 || nc >= gW) continue;
-      if (visited.has(key)) continue;
+      if (closed.has(nKey)) continue;
       if (!isWalkable(grid[nr][nc])) continue;
-      visited.add(key);
-      queue.push([...path, {r: nr, c: nc}]);
+      const tentG = curG + 1;
+      if (tentG < (gScore.get(nKey) ?? Infinity)) {
+        gScore.set(nKey, tentG);
+        cameFrom.set(nKey, curKey);
+        const f = tentG + h(nr, nc);
+        const existing = open.find(o => o.r === nr && o.c === nc);
+        if (existing) existing.f = f;
+        else open.push({ r: nr, c: nc, f });
+      }
     }
   }
   return null;
+}
+
+// ── Manual Route Drawing ──────────────────────────────────────────────────
+function startManualDraw(routeIdx) {
+  // If already drawing this route, cancel
+  if (manualDraw && manualDraw.routeIdx === routeIdx) { cancelManualDraw(); return; }
+  // Cancel any existing draw
+  if (manualDraw) cancelManualDraw();
+
+  const route = routes[routeIdx];
+  const isM = route.name.endsWith('_M');
+
+  // Find the spawn point for this route
+  const routeNum = (route.name.match(/(\d+)/) || [,0])[1];
+  const spawnTile = 'SPAWN' + routeNum;
+  let startCell = null;
+  for (let r = 0; r < gH && !startCell; r++)
+    for (let c = 0; c < gW && !startCell; c++)
+      if (grid[r][c] === spawnTile) startCell = { r, c };
+
+  if (!startCell) { status(`수동 입력: ${spawnTile} 타일을 찾을 수 없음`); return; }
+
+  manualDraw = { routeIdx, isM, path: [startCell] };
+  highlightManualPath();
+  renderSide();
+  status(`수동 입력: ${spawnTile}에서 시작 — 인접한 타일을 클릭하여 경로 지정 (ESC: 취소, 백스페이스: 되돌리기)`);
+}
+
+function cancelManualDraw() {
+  manualDraw = null;
+  clearDrawHighlights();
+  renderSide();
+  status('수동 입력 취소');
+}
+
+function finishManualDraw() {
+  if (!manualDraw) return;
+  const route = routes[manualDraw.routeIdx];
+  route.path = manualDraw.path.map(p => `(${p.c},${p.r})`).join('->');
+  manualDraw = null;
+  clearDrawHighlights();
+  markMapDirty();
+  drawRoutes();
+  renderSide();
+  status('수동 입력 완료');
+}
+
+function isManualWalkable(r, c) {
+  if (r < 0 || r >= gH || c < 0 || c >= gW) return false;
+  const t = grid[r][c];
+  if (t.startsWith('SPAWN') || t === 'PATH' || t === 'RUNE') return true;
+  if (manualDraw && manualDraw.isM && t.endsWith('_M')) return true;
+  return false;
+}
+
+function isAdjacent(a, b) {
+  return Math.abs(a.r - b.r) + Math.abs(a.c - b.c) === 1;
+}
+
+function onManualClick(r, c) {
+  if (!manualDraw) return false;
+  const last = manualDraw.path[manualDraw.path.length - 1];
+
+  // Must be adjacent to last cell
+  if (!isAdjacent(last, { r, c })) return false;
+  // Must be walkable
+  if (!isManualWalkable(r, c)) return false;
+  // No consecutive duplicate (same as last)
+  if (last.r === r && last.c === c) return false;
+
+  manualDraw.path.push({ r, c });
+  highlightManualPath();
+  drawRoutes();
+
+  // Check if reached RUNE
+  if (grid[r][c] === 'RUNE') {
+    finishManualDraw();
+  }
+  return true;
+}
+
+function undoManualStep() {
+  if (!manualDraw || manualDraw.path.length <= 1) return;
+  manualDraw.path.pop();
+  highlightManualPath();
+  drawRoutes();
+}
+
+function highlightManualPath() {
+  clearDrawHighlights();
+  if (!manualDraw) return;
+  manualDraw.path.forEach((p, i) => {
+    const el = document.querySelector(`.cell[data-r="${p.r}"][data-c="${p.c}"]`);
+    if (el) el.classList.add(i === 0 ? 'draw-start' : 'draw-highlight');
+  });
+
+  // Also temporarily update route path for live preview
+  const route = routes[manualDraw.routeIdx];
+  if (route) route.path = manualDraw.path.map(p => `(${p.c},${p.r})`).join('->');
+}
+
+function clearDrawHighlights() {
+  document.querySelectorAll('.draw-highlight, .draw-start').forEach(el => {
+    el.classList.remove('draw-highlight', 'draw-start');
+  });
+}
+
+// Override grid mouse events for manual drawing
+function onDown(e) {
+  if (e.button !== 0) return;
+  const r = +e.currentTarget.dataset.r, c = +e.currentTarget.dataset.c;
+  if (manualDraw) {
+    onManualClick(r, c);
+    e.preventDefault();
+    return;
+  }
+  painting = true;
+  paint(r, c);
+  e.preventDefault();
+}
+function onOver(e) {
+  if (manualDraw) {
+    // Support drag drawing in manual mode
+    if (e.buttons === 1) {
+      const r = +e.currentTarget.dataset.r, c = +e.currentTarget.dataset.c;
+      onManualClick(r, c);
+    }
+    return;
+  }
+  if (!painting) return;
+  paint(+e.currentTarget.dataset.r, +e.currentTarget.dataset.c);
+}
+
+// Keyboard shortcuts for manual drawing
+document.addEventListener('keydown', e => {
+  if (!manualDraw) return;
+  if (e.key === 'Escape') { cancelManualDraw(); e.preventDefault(); }
+  if (e.key === 'Backspace') { undoManualStep(); e.preventDefault(); }
+});
+
+// ── Route Playback ────────────────────────────────────────────────────────
+function toggleRoutePlay(idx) {
+  if (routeAnim && routeAnim.routeIdx === idx) { stopRoutePlay(); return; }
+  stopRoutePlay();
+  const route = routes[idx];
+  if (!route) return;
+  const pts = parseRoute(route.path);
+  if (pts.length < 2) { status('재생: 경로가 비어있음'); return; }
+
+  routeAnim = { routeIdx: idx, timer: null, step: 0, pts };
+  renderSide();
+  animStep();
+}
+
+function animStep() {
+  if (!routeAnim) return;
+  const { pts, step } = routeAnim;
+
+  clearAnimHighlights();
+
+  // Trail: all visited cells
+  for (let i = 0; i < step; i++) {
+    const el = document.querySelector(`.cell[data-r="${pts[i].r}"][data-c="${pts[i].c}"]`);
+    if (el) el.classList.add('anim-trail');
+  }
+  // Head: current cell
+  const cur = pts[step];
+  const headEl = document.querySelector(`.cell[data-r="${cur.r}"][data-c="${cur.c}"]`);
+  if (headEl) headEl.classList.add('anim-head');
+
+  if (step >= pts.length - 1) {
+    // Reached end — hold briefly then stop
+    routeAnim.timer = setTimeout(() => { stopRoutePlay(); }, 500);
+    return;
+  }
+
+  routeAnim.step++;
+  routeAnim.timer = setTimeout(animStep, 120);
+}
+
+function stopRoutePlay() {
+  if (!routeAnim) return;
+  clearTimeout(routeAnim.timer);
+  routeAnim = null;
+  clearAnimHighlights();
+  renderSide();
+  status('준비');
+}
+
+function clearAnimHighlights() {
+  document.querySelectorAll('.anim-trail, .anim-head').forEach(el => {
+    el.classList.remove('anim-trail', 'anim-head');
+  });
 }
 
 function status(msg) { document.getElementById('bar').textContent = msg; }
