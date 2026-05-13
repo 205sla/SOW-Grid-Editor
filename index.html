@@ -125,6 +125,10 @@ button.act.dirty { background: #fff; color: #000; border-color: #fff; }
 .cell.BLOCKED_L4_M { background: #28152a; box-shadow: inset 0 0 0 2px #a040c0; }
 .cell.BLOCKED_L5   { background: #153030; }
 .cell.BLOCKED_L5_M { background: #153030; box-shadow: inset 0 0 0 2px #40b0b0; }
+.cell.TURRET1 { background: #3a6a3a; }
+.cell.TURRET2 { background: #4a7a3a; }
+.cell.TURRET3 { background: #5a8a3a; }
+.cell.TURRET4 { background: #6a9a4a; }
 .cell.lbl::before {
   content: attr(data-xy);
   font-size: 7px;
@@ -466,6 +470,7 @@ const TILES = ['BLOCKED','PATH','SPAWN','RUNE'];
 const BL_LEVELS = ['L1','L2','L3','L4','L5'];
 const TC = {
   BLOCKED:'#1c1c1c', PATH:'#7a6540', SPAWN:'#8b2222', RUNE:'#2a228b',
+  TURRET1:'#3a6a3a', TURRET2:'#4a7a3a', TURRET3:'#5a8a3a', TURRET4:'#6a9a4a',
   BLOCKED_L1:'#1a2535', BLOCKED_L1_M:'#1a2535',
   BLOCKED_L2:'#152518', BLOCKED_L2_M:'#152518',
   BLOCKED_L3:'#352015', BLOCKED_L3_M:'#352015',
@@ -541,7 +546,7 @@ function buildTileBtns() {
   sep.className = 'sep';
   wrap.appendChild(sep);
 
-  ['PATH','SPAWN','RUNE'].forEach(t => {
+  ['PATH','SPAWN','RUNE','TURRET1','TURRET2','TURRET3','TURRET4'].forEach(t => {
     wrap.appendChild(makeBtn('tb-' + t, t, TC[t], '#ddd', () => setTile(t)));
   });
 
@@ -638,7 +643,9 @@ function cellBaseClass(tile) {
 }
 
 function tileLabel(tile) {
-  return tile.startsWith('BLOCKED_') ? 'BLOCKED\n' + tile.slice(8) : tile;
+  if (tile.startsWith('BLOCKED_')) return 'BLOCKED\n' + tile.slice(8);
+  if (tile.startsWith('TURRET')) return 'TURRET\n' + tile.slice(6);
+  return tile;
 }
 
 function updateCellEl(r, c) {
